@@ -192,6 +192,9 @@ h1 { margin: 0; font-size: 2rem; line-height: 1.15; font-weight: 700; letter-spa
         <label class="field">RANDOM becomes
           <select id="rand"><option value="randint">random.randint(a, b)</option><option value="randrange">randrange(a, b + 1)</option></select>
         </label>
+        <label class="field">INPUT becomes
+          <select id="inp"><option value="input">input()</option><option value="cmu">app.getTextInput(...)</option></select>
+        </label>
         <label class="check"><input type="checkbox" id="keep"> Match DISPLAY spacing</label>
       </div>
     </div>
@@ -364,6 +367,9 @@ const MSG = {
   breakCont: "break and continue jump out of a loop, and AP pseudocode has no way to do that. Try a REPEAT UNTIL condition or an IF instead.",
   eq2: 'AP pseudocode tests equality with a single =, not ==.',
   randomAp2Py: 'randrange(a, b) stops before b, so b + 1 is used to keep RANDOM(a, b) inclusive.',
+  getText: 'app.getTextInput() asks in a pop-up with a message, but INPUT() has no message option, so the prompt was left out.',
+  merge: 'INPUT() already gives back the value, so getting the text and then converting it with int() or float() becomes one step.',
+  inputStrCmu: 'app.getTextInput() always gives back text (a string). To do math with it, wrap it: int(app.getTextInput("...")). The message "Enter a value" is a placeholder you can change.',
   extFn: name => name + " isn't on the AP exam reference sheet. It is shown in AP style as an extension."
 };
 
@@ -482,6 +488,7 @@ function lexAP(src) {
     }
     if (/[0-9]/.test(ch)) { const m = /^\d+(\.\d+)?/.exec(src.slice(i)); push('num', m[0], i, i + m[0].length); i += m[0].length; continue; }
     if (/[A-Za-z_]/.test(ch)) { const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(src.slice(i)); push('name', m[0], i, i + m[0].length); i += m[0].length; continue; }
+    if (src.startsWith('<--', i)) { push('op', '←', i, i + 3, { ascii: '<--' }); i += 3; continue; }
     const two = src.slice(i, i + 2);
     if (OPS2[two]) { push('op', OPS2[two], i, i + 2, { ascii: two }); i += 2; continue; }
     if ('←≠≤≥=<>+-*/()[]{},.:'.includes(ch)) { push('op', ch, i, i + 1); i++; continue; }
@@ -1065,7 +1072,7 @@ function emitCallAP(n, c) {
       case 'int': case 'float': case 'str': {
         argc(1);
         const a = A[0];
-        if (fname !== 'str' && a.t === 'call' && a.f.t === 'name' && a.f.v === 'input') { c.note('diff', 'conv', MSG.conv); return emitAP(a, c); }
+        if (fname !== 'str' && isInputCall(a)) { c.note('diff', 'conv', MSG.conv); return emitAP(a, c); }
         const nm = fname === 'str' ? 'STRING' : fname.toUpperCase();
         c.note('ext', 'fn:' + nm, MSG.extFn(nm));
         return { s: nm + '(' + E(a) + ')', p: 10 };
@@ -1102,6 +1109,7 @@ function emitCallAP(n, c) {
       }
     }
   }
+  if (isGetText(n)) { c.note('diff', 'getText', MSG.getText); return { s: 'INPUT()', p: 10 }; }
   const o = E(obj);
   const oo = wrapP(emitAP(obj, c), 10);
   switch (meth) {
@@ -1122,13 +1130,32 @@ function emitCallAP(n, c) {
   return { s: oo + '.' + meth + '(' + parts.join(', ') + ')', p: 10 };
 }
 
+function isGetText(n) {
+  return n.t === 'call' && n.f.t === 'attr' && n.f.n === 'getTextInput' && n.f.o.t === 'name' && n.f.o.v === 'app';
+}
+function isInputCall(n) {
+  return n.t === 'call' && ((n.f.t === 'name' && n.f.v === 'input') || isGetText(n));
+}
 function isListish(v) {
   return v.t === 'list' || (v.t === 'call' && ((v.f.t === 'name' && v.f.v === 'list') || (v.f.t === 'attr' && v.f.n === 'copy')));
 }
 
 function stmtsAP(list, c) {
   const out = [];
-  for (const s of list) out.push.apply(out, stmtAP(s, c));
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i], nx = list[i + 1];
+    if (s.t === 'assign' && s.target.t === 'name' && isInputCall(s.value) && nx && nx.t === 'assign' && nx.target.t === 'name' &&
+        nx.value.t === 'call' && nx.value.f.t === 'name' && (nx.value.f.v === 'int' || nx.value.f.v === 'float') &&
+        nx.value.args.length === 1 && !nx.value.args[0].name && nx.value.args[0].e.t === 'name' && nx.value.args[0].e.v === s.target.v &&
+        (nx.target.v === s.target.v || !usesName(list.slice(i + 2), s.target.v))) {
+      const merged = Object.assign({}, nx, { value: s.value, comment: nx.comment || s.comment });
+      c.line = s.line; c.note('diff', 'merge', MSG.merge);
+      c.line = nx.line; c.note('diff', 'merge', MSG.merge);
+      out.push.apply(out, stmtAP(merged, c));
+      i++; continue;
+    }
+    out.push.apply(out, stmtAP(s, c));
+  }
   return out;
 }
 
@@ -1309,7 +1336,9 @@ function emitCallPy(n, c) {
       if (!A.length) return { s: 'print()', p: 10 };
       return { s: 'print(' + E(A[0]) + (c.opts.keepSpace ? ', end=" "' : '') + ')', p: 10 };
     }
-    case 'INPUT': argc(0); c.note('diff', 'inputStr', MSG.inputStr); return { s: 'input()', p: 10 };
+    case 'INPUT': argc(0);
+      if (c.opts.input === 'cmu') { c.note('diff', 'inputStr', MSG.inputStrCmu); return { s: 'app.getTextInput("Enter a value")', p: 10 }; }
+      c.note('diff', 'inputStr', MSG.inputStr); return { s: 'input()', p: 10 };
     case 'RANDOM': {
       argc(2);
       if (c.opts.random === 'randrange') { c.note('diff', 'randomAp2Py', MSG.randomAp2Py); return { s: 'randrange(' + E(A[0]) + ', ' + E(addConst(A[1], 1)) + ')', p: 10 }; }
@@ -1489,11 +1518,13 @@ const EXAMPLES = [
   { label: 'CS Academy: mouse event', py: [
     'from cmu_graphics import *', '', "app.background = 'lightBlue'", "ball = Circle(200, 200, 30, fill='red')", 'clicks = 0', '',
     'def onMousePress(mouseX, mouseY):', '    global clicks', '    ball.centerX = mouseX', '    ball.centerY = mouseY', '    clicks += 1'] },
+  { label: 'CS Academy: getting a number', py: [
+    'str = app.getTextInput("Enter a Number")', 'A = int(str)', 'print(A + 1)'] },
   { label: 'Python the translator skips', py: [
     'names = ["Ana", "Ben", "Cy"]', 'for name in names:', '    if name in names[1:]:', '        continue', '    print(name ** 2)'] }
 ].map(e => ({ label: e.label, py: e.py.join('\n') }));
 
-const state = { dir: 'py2ap', view: 'text', random: 'randint', keepSpace: false, buf: { py: '', ap: '' }, res: null, hl: null, timer: null };
+const state = { dir: 'py2ap', view: 'text', random: 'randint', input: 'input', keepSpace: false, buf: { py: '', ap: '' }, res: null, hl: null, timer: null };
 const ta = $('src');
 const inLang = () => (state.dir === 'py2ap' ? 'py' : 'ap');
 const outLang = () => (state.dir === 'py2ap' ? 'ap' : 'py');
@@ -1584,7 +1615,7 @@ function applyHl() {
 }
 
 function run() {
-  state.res = T.translate(state.dir, ta.value, { random: state.random, keepSpace: state.keepSpace });
+  state.res = T.translate(state.dir, ta.value, { random: state.random, input: state.input, keepSpace: state.keepSpace });
   state.hl = null;
   renderGutter(); renderOut(); renderNotes();
 }
@@ -1653,6 +1684,7 @@ document.querySelectorAll('#dirseg button').forEach(b => b.addEventListener('cli
 document.querySelectorAll('#viewseg button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 document.querySelectorAll('.sym').forEach(b => b.addEventListener('click', () => insertAtCursor(b.dataset.ch)));
 $('rand').addEventListener('change', e => { state.random = e.target.value; run(); });
+$('inp').addEventListener('change', e => { state.input = e.target.value; run(); });
 $('keep').addEventListener('change', e => { state.keepSpace = e.target.checked; run(); });
 $('clear').addEventListener('click', () => { ta.value = ''; onInput(); ta.focus(); });
 $('back').addEventListener('click', () => {
@@ -1697,6 +1729,7 @@ const SHEET = [
   ['x = 5', 'x ← 5', ''],
   ['print(x)', 'DISPLAY(x)', 'DISPLAY puts a space after the value. print() starts a new line.'],
   ['input()', 'INPUT()', 'input() always gives back a string.'],
+  ['str = app.getTextInput("Enter a Number")\nA = int(str)', 'A ← INPUT()', 'CS Academy. The prompt is left out, and the two steps become one.'],
   ['a % b', 'a MOD b', ''],
   ['random.randint(a, b)', 'RANDOM(a, b)', 'Both a and b can be picked.'],
   ['a == b\na != b\na >= b\na <= b', 'a = b\na ≠ b\na ≥ b\na ≤ b', 'A single = tests equality in AP pseudocode.'],
