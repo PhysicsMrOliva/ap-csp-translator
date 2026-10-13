@@ -345,7 +345,7 @@ const MSG = {
   displayAp2Py: 'DISPLAY puts a space after its value, while print() starts a new line. Turn on "Match DISPLAY spacing" under Options to get print(..., end=" ").',
   printkw: "print() options such as end= and sep= aren't part of AP pseudocode, so they were left out.",
   inputPrompt: 'INPUT() has no message option, so the prompt is shown with its own DISPLAY first.',
-  conv: "INPUT() already hands back the value, so int() and float() aren't needed in AP pseudocode.",
+  conv: "AP pseudocode doesn't need int() or float(), so the conversion was left out and the value is used as is.",
   inputStr: 'input() always gives back text (a string). To do math with it, wrap it: int(input()) or float(input()).',
   importLine: "Imports aren't written in AP pseudocode, so import lines were left out.",
   globalLine: 'AP pseudocode has no global keyword, so that line was left out.',
@@ -1073,7 +1073,8 @@ function emitCallAP(n, c) {
         argc(1);
         const a = A[0];
         if (fname !== 'str' && isInputCall(a)) { c.note('diff', 'conv', MSG.conv); return emitAP(a, c); }
-        const nm = fname === 'str' ? 'STRING' : fname.toUpperCase();
+        if (fname !== 'str') { c.note('diff', 'conv', MSG.conv); return emitAP(a, c); }
+        const nm = 'STRING';
         c.note('ext', 'fn:' + nm, MSG.extFn(nm));
         return { s: nm + '(' + E(a) + ')', p: 10 };
       }
@@ -1757,7 +1758,8 @@ const EXTRA = [
   ['random.choice(aList)', 'aList[RANDOM(1, LENGTH(aList))]', ''],
   ['aList.pop(i)', 'REMOVE(aList, i + 1)', 'Only as its own line, because REMOVE does not give the item back.'],
   ['abs(x)  round(x)\nmin(a, b)  max(a, b)\nsum(aList)', 'ABS(x)  ROUND(x)\nMIN(a, b)  MAX(a, b)\nSUM(aList)', 'Written in AP style.'],
-  ['int(x)  float(x)  str(x)', 'INT(x)  FLOAT(x)  STRING(x)', 'int(input()) becomes just INPUT().'],
+  ['int(x)  float(x)', 'x', 'AP pseudocode leaves these conversions out.'],
+  ['str(x)', 'STRING(x)', 'Written in AP style.'],
   ['f"Score: {score}"', '"Score: " + score', 'Joined with +.'],
   ['# a comment', '// a comment', ''],
   ["Circle(200, 200, 30, fill='red')", 'Circle(200, 200, 30, fill: "red")', 'Named values are written name: value.'],
